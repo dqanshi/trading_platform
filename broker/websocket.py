@@ -1,112 +1,79 @@
 import threading
-from typing import List, Dict, Any, Callable, Optional
-from kiteconnect import KiteTicker
-from config.config import settings
+from typing import Callable, List, Optional, Dict, Any
 from config.logging_config import get_logger
 
-logger = get_logger("system")
+logger = get_logger("websocket")
 
 
 class KiteWebSocketManager:
-    def __init__(self, api_key: Optional[str] = None, access_token: Optional[str] = None):
-        self.api_key = api_key or settings.KITE_API_KEY
-        self.access_token = access_token or settings.KITE_ACCESS_TOKEN
-        self.kws: Optional[KiteTicker] = None
-        self.is_connected: bool = False
+    """
+    Manages WebSocket streaming connections via KiteTicker for receiving real-time tick data.
+    """
+
+    def __init__(self, api_key: str, access_token: str):
+        self.api_key = api_key
+        self.access_token = access_token
+        self.ticker = None
         self.subscribed_tokens: List[int] = []
         self.tick_callbacks: List[Callable[[List[Dict[str, Any]]], None]] = []
-        self.order_update_callbacks: List[Callable[[Dict[str, Any]], None]] = []
-        self._thread: Optional[threading.Thread] = None
 
-    def initialize(self, access_token: str) -> None:
-        self.access_token = access_token
-        self.kws = KiteTicker(api_key=self.api_key, access_token=self.access_token)
-        self._bind_callbacks()
+    def initialize(self, access_token: Optional[str] = None):
+        if access_token:
+            self.access_token = access_token
 
-    def _bind_callbacks(self) -> None:
-        if not self.kws:
+        try:
+            from kiteconnect import KiteTicker
+            self.ticker = KiteTicker(self.api_key, self.access_token)
+            self._bind_events()
+        except ImportError:
+            logger.warning("KiteTicker not available. WebSocket streaming in mock mode.")
+            self.ticker = None
+
+    def _bind_events(self):
+        if not self.ticker:
             return
 
         def on_ticks(ws, ticks):
-            for cb in self.tick_callbacks:
+            for callback in self.tick_callbacks:
                 try:
-                    cb(ticks)
+                    callback(ticks)
                 except Exception as e:
-                    logger.error(f"Error in tick callback execution: {str(e)}")
+                    logger.error(f"Error executing tick callback: {str(e)}")
 
         def on_connect(ws, response):
-            self.is_connected = True
-            logger.info("WebSocket connection established successfully")
+            logger.info("Kite WebSocket connected successfully.")
             if self.subscribed_tokens:
                 ws.subscribe(self.subscribed_tokens)
                 ws.set_mode(ws.MODE_FULL, self.subscribed_tokens)
 
         def on_close(ws, code, reason):
-            self.is_connected = False
-            logger.warning(f"WebSocket closed: Code {code} - Reason: {reason}")
+            logger.warning(f"Kite WebSocket disconnected: {code} - {reason}")
 
         def on_error(ws, code, reason):
-            logger.error(f"WebSocket error: Code {code} - Reason: {reason}")
+            logger.error(f"Kite WebSocket error: {code} - {reason}")
 
-        def on_reconnect(ws, attempt_count):
-            logger.info(f"WebSocket reconnecting... Attempt #{attempt_count}")
+        self.ticker.on_ticks = on_ticks
+        self.ticker.on_connect = on_connect
+        self.ticker.on_close = on_close
+        self.ticker.on_error = on_error
 
-        def on_noreconnect(ws):
-            self.is_connected = False
-            logger.error("WebSocket reconnection failed. Exceeded max attempts.")
+    def register_tick_callback(self, callback: Callable[[List[Dict[str, Any]]], None]):
+        self.tick_callbacks.append(callback)
 
-        def on_order_update(ws, data):
-            logger.info(f"Order update received via WebSocket: {data}")
-            for cb in self.order_update_callbacks:
-                try:
-                    cb(data)
-                except Exception as e:
-                    logger.error(f"Error in order update callback: {str(e)}")
+    def subscribe(self, tokens: List[int]):
+        self.subscribed_tokens.extend(tokens)
+        self.subscribed_tokens = list(set(self.subscribed_tokens))
+        if self.ticker and self.ticker.is_connected():
+            self.ticker.subscribe(tokens)
+            self.ticker.set_mode(self.ticker.MODE_FULL, tokens)
 
-        self.kws.on_ticks = on_ticks
-        self.kws.on_connect = on_connect
-        self.kws.on_close = on_close
-        self.kws.on_error = on_error
-        self.kws.on_reconnect = on_reconnect
-        self.kws.on_noreconnect = on_noreconnect
-        self.kws.on_order_update = on_order_update
+    def connect(self):
+        if self.ticker:
+            t = threading.Thread(target=self.ticker.connect, kwargs={"threaded": True})
+            t.daemon = True
+            t.start()
+            logger.info("WebSocket connection thread started.")
 
-    def register_tick_callback(self, callback: Callable[[List[Dict[str, Any]]], None]) -> None:
-        if callback not in self.tick_callbacks:
-            self.tick_callbacks.append(callback)
-
-    def register_order_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
-        if callback not in self.order_update_callbacks:
-            self.order_update_callbacks.append(callback)
-
-    def connect(self) -> None:
-        if not self.kws:
-            if not self.access_token:
-                raise ValueError("Cannot connect WebSocket: Access Token is missing")
-            self.initialize(self.access_token)
-
-        if self.is_connected:
-            return
-
-        self._thread = threading.Thread(target=self.kws.connect, kwargs={"threaded": False}, daemon=True)
-        self._thread.start()
-
-    def disconnect(self) -> None:
-        if self.kws and self.is_connected:
-            self.kws.close()
-            self.is_connected = False
-            logger.info("WebSocket manually disconnected")
-
-    def subscribe(self, tokens: List[int], mode: str = "full") -> None:
-        new_tokens = [t for t in tokens if t not in self.subscribed_tokens]
-        if new_tokens:
-            self.subscribed_tokens.extend(new_tokens)
-            if self.kws and self.is_connected:
-                self.kws.subscribe(new_tokens)
-                mode_attr = getattr(self.kws, f"MODE_{mode.upper()}", self.kws.MODE_FULL)
-                self.kws.set_mode(mode_attr, new_tokens)
-
-    def unsubscribe(self, tokens: List[int]) -> None:
-        self.subscribed_tokens = [t for t in self.subscribed_tokens if t not in tokens]
-        if self.kws and self.is_connected:
-            self.kws.unsubscribe(tokens)
+    def disconnect(self):
+        if self.ticker and self.ticker.is_connected():
+            self.ticker.close()
