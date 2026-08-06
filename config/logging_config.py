@@ -2,57 +2,43 @@ import os
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
-from config.config import settings
 
 
-def setup_logging() -> None:
-    log_dir = settings.LOG_DIR
-    os.makedirs(log_dir, exist_ok=True)
+def setup_logging():
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
 
-    log_format = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] [%(name)s] [%(filename)s:%(lineno)d] - %(message)s"
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    root_logger = logging.getLogger()
-    root_logger.setLevel(settings.LOG_LEVEL.upper())
-    root_logger.handlers.clear()
-
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(log_format)
-    console_handler.setLevel(settings.LOG_LEVEL.upper())
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.INFO)
+
+    app_file_handler = RotatingFileHandler(
+        os.path.join(log_dir, "app.log"),
+        maxBytes=10485760,
+        backupCount=5
+    )
+    app_file_handler.setFormatter(formatter)
+    app_file_handler.setLevel(logging.INFO)
+
+    error_file_handler = RotatingFileHandler(
+        os.path.join(log_dir, "errors.log"),
+        maxBytes=10485760,
+        backupCount=5
+    )
+    error_file_handler.setFormatter(formatter)
+    error_file_handler.setLevel(logging.ERROR)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
     root_logger.addHandler(console_handler)
-
-    log_files = {
-        "system": os.path.join(log_dir, "system.log"),
-        "api": os.path.join(log_dir, "api.log"),
-        "orders": os.path.join(log_dir, "orders.log"),
-        "signals": os.path.join(log_dir, "signals.log"),
-        "errors": os.path.join(log_dir, "errors.log"),
-        "strategy": os.path.join(log_dir, "strategy.log"),
-    }
-
-    handlers = {}
-    for log_name, file_path in log_files.items():
-        file_handler = RotatingFileHandler(
-            filename=file_path,
-            maxBytes=10 * 1024 * 1024,
-            backupCount=10,
-            encoding="utf-8"
-        )
-        file_handler.setFormatter(log_format)
-        handlers[log_name] = file_handler
-
-    root_logger.addHandler(handlers["system"])
-
-    error_handler = handlers["errors"]
-    error_handler.setLevel(logging.ERROR)
-    root_logger.addHandler(error_handler)
-
-    for logger_name in ["api", "orders", "signals", "strategy"]:
-        dedicated_logger = logging.getLogger(logger_name)
-        dedicated_logger.setLevel(settings.LOG_LEVEL.upper())
-        dedicated_logger.addHandler(handlers[logger_name])
-        dedicated_logger.propagate = True
+    root_logger.addHandler(app_file_handler)
+    root_logger.addHandler(error_file_handler)
 
 
 def get_logger(name: str) -> logging.Logger:
