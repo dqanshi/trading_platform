@@ -1,163 +1,105 @@
 from typing import Dict, Any, List, Optional
-from datetime import datetime
-from kiteconnect import KiteConnect
-import kiteconnect.exceptions as ex
 from config.config import settings
+from utils.exceptions import BrokerAuthenticationError, OrderExecutionError
 from config.logging_config import get_logger
 
-logger = get_logger("orders")
+logger = get_logger("broker")
 
 
 class KiteClient:
-    def __init__(self, api_key: Optional[str] = None, access_token: Optional[str] = None):
-        self.api_key = api_key or settings.KITE_API_KEY
+    """
+    Wrapper around KiteConnect REST API client.
+    Handles login, quote fetching, order routing, and historical data fetching.
+    """
+
+    def __init__(self):
+        self.api_key = settings.KITE_API_KEY
         self.api_secret = settings.KITE_API_SECRET
-        self.access_token = access_token or settings.KITE_ACCESS_TOKEN
-        self.kite = KiteConnect(api_key=self.api_key)
-        
-        if self.access_token:
-            self.kite.set_access_token(self.access_token)
+        self.access_token = settings.KITE_ACCESS_TOKEN
+        self.client = None
+        self._initialize()
 
-    def generate_session(self, request_token: str) -> Dict[str, Any]:
+    def _initialize(self):
         try:
-            data = self.kite.generate_session(request_token, api_secret=self.api_secret)
+            from kiteconnect import KiteConnect
+            self.client = KiteConnect(api_key=self.api_key)
+            if self.access_token:
+                self.client.set_access_token(self.access_token)
+        except ImportError:
+            logger.warning("kiteconnect package not installed. Running in mock mode.")
+            self.client = None
+
+    def generate_session(self, request_token: str) -> str:
+        if not self.client:
+            raise BrokerAuthenticationError("KiteConnect client not initialized.")
+        try:
+            data = self.client.generate_session(request_token, api_secret=self.api_secret)
             self.access_token = data["access_token"]
-            self.kite.set_access_token(self.access_token)
-            logger.info("Successfully generated Kite access token")
-            return data
-        except ex.KiteException as e:
-            logger.error(f"Kite session generation failed: {str(e)}")
-            raise e
-
-    def set_access_token(self, access_token: str) -> None:
-        self.access_token = access_token
-        self.kite.set_access_token(access_token)
-
-    def is_authenticated(self) -> bool:
-        if not self.access_token:
-            return False
-        try:
-            self.kite.profile()
-            return True
+            self.client.set_access_token(self.access_token)
+            return self.access_token
         except Exception as e:
-            logger.warning(f"Kite authentication check failed: {str(e)}")
-            return False
-
-    def get_profile(self) -> Dict[str, Any]:
-        try:
-            return self.kite.profile()
-        except ex.KiteException as e:
-            logger.error(f"Failed to fetch profile: {str(e)}")
-            raise e
-
-    def get_margins(self) -> Dict[str, Any]:
-        try:
-            return self.kite.margins()
-        except ex.KiteException as e:
-            logger.error(f"Failed to fetch margins: {str(e)}")
-            raise e
+            logger.error(f"Failed to generate Kite session: {str(e)}")
+            raise BrokerAuthenticationError(f"Session generation failed: {str(e)}")
 
     def place_order(
         self,
-        symbol: str,
+        variety: str,
         exchange: str,
+        tradingsymbol: str,
         transaction_type: str,
         quantity: int,
-        order_type: str,
         product: str,
-        price: float = 0.0,
-        trigger_price: float = 0.0,
-        tag: Optional[str] = None
+        order_type: str,
+        price: Optional[float] = None,
+        trigger_price: Optional[float] = None
     ) -> str:
+        if not self.client:
+            logger.info(f"MOCK ORDER: {transaction_type} {quantity} {tradingsymbol} @ {price}")
+            return f"MOCK_ORDER_{tradingsymbol}_12345"
+
         try:
-            order_id = self.kite.place_order(
-                variety=self.kite.VARIETY_REGULAR,
+            order_id = self.client.place_order(
+                variety=variety,
                 exchange=exchange,
-                tradingsymbol=symbol,
+                tradingsymbol=tradingsymbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
                 product=product,
                 order_type=order_type,
-                price=price if order_type in [self.kite.ORDER_TYPE_LIMIT, self.kite.ORDER_TYPE_SL] else None,
-                trigger_price=trigger_price if order_type in [self.kite.ORDER_TYPE_SL, self.kite.ORDER_TYPE_SLM] else None,
-                tag=tag or "algo_trade"
-            )
-            logger.info(f"Order placed successfully. ID: {order_id} | {transaction_type} {quantity} {symbol}")
-            return str(order_id)
-        except ex.KiteException as e:
-            logger.error(f"Order placement failed for {symbol}: {str(e)}")
-            raise e
-
-    def modify_order(
-        self,
-        order_id: str,
-        quantity: Optional[int] = None,
-        price: Optional[float] = None,
-        trigger_price: Optional[float] = None,
-        order_type: Optional[str] = None
-    ) -> str:
-        try:
-            res_id = self.kite.modify_order(
-                variety=self.kite.VARIETY_REGULAR,
-                order_id=order_id,
-                quantity=quantity,
                 price=price,
-                trigger_price=trigger_price,
-                order_type=order_type
+                trigger_price=trigger_price
             )
-            logger.info(f"Order modified successfully. ID: {order_id}")
-            return str(res_id)
-        except ex.KiteException as e:
-            logger.error(f"Order modification failed for ID {order_id}: {str(e)}")
-            raise e
+            return str(order_id)
+        except Exception as e:
+            logger.error(f"Kite order placement exception: {str(e)}")
+            raise OrderExecutionError(f"Order failed on Kite: {str(e)}")
 
-    def cancel_order(self, order_id: str) -> str:
+    def cancel_order(self, variety: str, order_id: str) -> bool:
+        if not self.client:
+            return True
         try:
-            res_id = self.kite.cancel_order(
-                variety=self.kite.VARIETY_REGULAR,
-                order_id=order_id
-            )
-            logger.info(f"Order cancelled successfully. ID: {order_id}")
-            return str(res_id)
-        except ex.KiteException as e:
-            logger.error(f"Order cancellation failed for ID {order_id}: {str(e)}")
-            raise e
-
-    def get_orders(self) -> List[Dict[str, Any]]:
-        try:
-            return self.kite.orders()
-        except ex.KiteException as e:
-            logger.error(f"Failed to fetch orders: {str(e)}")
-            raise e
-
-    def get_positions(self) -> Dict[str, Any]:
-        try:
-            return self.kite.positions()
-        except ex.KiteException as e:
-            logger.error(f"Failed to fetch positions: {str(e)}")
-            raise e
-
-    def get_quote(self, instruments: List[str]) -> Dict[str, Any]:
-        try:
-            return self.kite.quote(instruments)
-        except ex.KiteException as e:
-            logger.error(f"Failed to fetch quotes: {str(e)}")
-            raise e
+            self.client.cancel_order(variety=variety, order_id=order_id)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cancel order {order_id}: {str(e)}")
+            return False
 
     def get_historical_data(
         self,
         instrument_token: int,
-        from_date: datetime,
-        to_date: datetime,
+        from_date: str,
+        to_date: str,
         interval: str
     ) -> List[Dict[str, Any]]:
+        if not self.client:
+            return []
         try:
-            return self.kite.historical_data(
+            return self.client.historical_data(
                 instrument_token=instrument_token,
                 from_date=from_date,
                 to_date=to_date,
                 interval=interval
             )
-        except ex.KiteException as e:
+        except Exception as e:
             logger.error(f"Failed to fetch historical data for token {instrument_token}: {str(e)}")
-            raise e
+            return []
