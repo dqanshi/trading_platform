@@ -1,33 +1,18 @@
-class TradingPlatformException(Exception):
-    """Base exception for all trading platform errors."""
+class QuantTerminalException(Exception):
+    """Base exception class for QuantTerminal engine."""
     pass
 
 
-class BrokerAuthenticationError(TradingPlatformException):
-    """Raised when authentication with the broker fails."""
+class BrokerAuthenticationError(QuantTerminalException):
+    """Raised when broker authentication or token exchange fails."""
     pass
 
 
-class OrderExecutionError(TradingPlatformException):
-    """Raised when an order placement or modification fails."""
+class OrderExecutionError(QuantTerminalException):
+    """Raised when an order placement, modification, or cancellation fails."""
     pass
 
 
-class RiskLimitExceededError(TradingPlatformException):
-    """Raised when an action violates risk management policies."""
-    pass
-
-
-class StrategyExecutionError(TradingPlatformException):
-    """Raised when an error occurs during strategy calculation or execution."""
-    pass
-
-
-class MarketDataError(TradingPlatformException):
-    """Raised when market data or WebSocket streaming fails."""
-    pass
-
-
-class InsufficientFundsError(TradingPlatformException):
-    """Raised when account margin or balance is insufficient for trade."""
+class RiskViolationError(QuantTerminalException):
+    """Raised when trade order breaches risk limits."""
     pass
